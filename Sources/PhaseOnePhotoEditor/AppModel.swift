@@ -5,6 +5,7 @@ import Foundation
 final class AppModel: ObservableObject {
     static let shared = AppModel()
     static let actionAPIPort: UInt16 = 4777
+    static let previewMaximumDimension: CGFloat = 2_400
 
     @Published var gpuStatus: GPUStatus = .unknown
     @Published var selectedImage: NSImage?
@@ -21,17 +22,50 @@ final class AppModel: ObservableObject {
     @Published var isRenderingPreview = false
     @Published var isExporting = false
     @Published var exportStatus = ""
+    @Published var exportFormat: RenderedExportFormat = .tiffFloat32
+    @Published var editsStatus = ""
+    @Published var isSavingEdits = false
+    @Published private(set) var isRAWSource = false
+    @Published private(set) var projectURL: URL?
+    private var savedAdjustments: [String: Double]?
+    private var savedExportFormat: RenderedExportFormat?
 
-    let omniGen = OmniGenService(repositoryPath: PhaseOnePaths.omniGen)
+    var hasUnsavedEdits: Bool {
+        selectedImagePath != nil && (adjustments.apiRepresentation != (savedAdjustments ?? AdjustmentState().apiRepresentation)
+            || (savedExportFormat != nil && savedExportFormat != exportFormat))
+    }
+
     private var actionAPIServer: LocalActionAPIServer?
+    private(set) var actionAPIBearerToken: String?
     private var previewRenderTask: Task<Void, Never>?
+    private var previewRenderGeneration = 0
+    private var imageLoadGeneration = 0
 
     init() {
         guard ProcessInfo.processInfo.environment["PHOTO_EDITOR_ENABLE_ACTION_API"] == "1" else {
             return
         }
 
-        let server = LocalActionAPIServer(port: Self.actionAPIPort) { [weak self] request in
+        let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        actionAPIBearerToken = token
+        fputs("PhotoEditorMac action API bearer token: \(token)\n", stderr)
+        let server = LocalActionAPIServer(
+            port: Self.actionAPIPort,
+            bearerToken: token,
+            readinessHandler: { [weak self] isReady in
+                Task { @MainActor [weak self] in
+                    guard let self else {
+                        return
+                    }
+                    if isReady {
+                        self.actionAPIStatus = "Action API listening at \(self.actionAPIBaseURL.absoluteString)"
+                        self.recordCommand("Action API started", detail: self.actionAPIBaseURL.absoluteString)
+                    } else {
+                        self.actionAPIStatus = "Automation API off"
+                    }
+                }
+            }
+        ) { [weak self] request in
             guard let self else {
                 return ActionAPIResponse.error(statusCode: 503, message: "Photo editor app model is unavailable.")
             }
@@ -40,8 +74,6 @@ final class AppModel: ObservableObject {
 
         actionAPIServer = server
         server.start()
-        actionAPIStatus = "Action API listening at \(actionAPIBaseURL.absoluteString)"
-        recordCommand("Action API started", detail: actionAPIBaseURL.absoluteString)
     }
 
     deinit {
@@ -62,14 +94,27 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func loadImage(from url: URL) async -> Bool {
+    func loadImage(from url: URL, restoringEdits: Bool = true) async -> Bool {
+        let generation = beginImageLoad()
         guard let loadedImage = await readImage(from: url) else {
+            guard imageLoadGeneration == generation else {
+                return false
+            }
             selectedImage = nil
+            adjustedPreviewImage = nil
             selectedImageName = "Could not open \(url.lastPathComponent)"
             selectedImagePath = nil
             selectedImageSize = nil
             beforeAfterComparison = nil
+            isRAWSource = false
+            projectURL = nil
+            savedAdjustments = nil
+            savedExportFormat = nil
+            editsStatus = PhotoSource.isRAW(url) ? "The RAW sensor data could not be decoded on this Mac." : ""
             recordCommand("Image open failed", detail: url.path)
+            return false
+        }
+        guard imageLoadGeneration == generation else {
             return false
         }
 
@@ -79,15 +124,45 @@ final class AppModel: ObservableObject {
         selectedImagePath = loadedImage.path
         selectedImageSize = loadedImage.size
         beforeAfterComparison = nil
+        adjustments.reset()
+        isRAWSource = PhotoSource.isRAW(url)
+        projectURL = nil
+        savedAdjustments = nil
+        savedExportFormat = nil
+        editsStatus = ""
         exportStatus = ""
         recordCommand("Image opened", detail: "\(loadedImage.name) • \(Int(loadedImage.size.width))x\(Int(loadedImage.size.height))")
+        if restoringEdits {
+            let sidecars = [url.appendingPathExtension("xmp"), url.deletingPathExtension().appendingPathExtension("xmp")]
+            if let sidecar = sidecars.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+                do {
+                    let project = try await Task.detached { try PhotoProjectStore.load(sidecar) }.value
+                    guard imageLoadGeneration == generation else { return false }
+                    guard project.sourceURL(relativeTo: sidecar).resolvingSymlinksInPath() == url.resolvingSymlinksInPath() else {
+                        throw PhotoWorkflowError("The sidecar refers to a different original photograph.")
+                    }
+                    restore(project, document: sidecar)
+                } catch {
+                    guard imageLoadGeneration == generation else { return false }
+                    editsStatus = error.localizedDescription
+                }
+            }
+        }
         schedulePreviewRender()
         return true
     }
 
     @discardableResult
     func showBeforeAfter(before beforeURL: URL, after afterURL: URL) async -> Bool {
-        guard let before = await readImage(from: beforeURL), let after = await readImage(from: afterURL) else {
+        let generation = beginImageLoad()
+        async let beforeResult = readImage(from: beforeURL)
+        async let afterResult = readImage(from: afterURL)
+        guard let before = await beforeResult,
+              let after = await afterResult,
+              imageLoadGeneration == generation else {
+            guard imageLoadGeneration == generation else {
+                return false
+            }
             recordCommand("Before/after failed", detail: "Could not load comparison images.")
             return false
         }
@@ -98,11 +173,17 @@ final class AppModel: ObservableObject {
         selectedImageName = "Before/after comparison"
         selectedImagePath = after.path
         selectedImageSize = after.size
+        isRAWSource = PhotoSource.isRAW(afterURL)
+        projectURL = nil
+        savedAdjustments = nil
+        savedExportFormat = nil
+        editsStatus = ""
         recordCommand("Before/after shown", detail: "\(before.name) -> \(after.name)")
         return true
     }
 
     func clearWorkspace() {
+        imageLoadGeneration += 1
         selectedImage = nil
         adjustedPreviewImage = nil
         selectedImageName = "No image selected"
@@ -110,9 +191,13 @@ final class AppModel: ObservableObject {
         selectedImageSize = nil
         beforeAfterComparison = nil
         adjustments.reset()
-        previewRenderTask?.cancel()
-        isRenderingPreview = false
+        cancelPreviewRender()
         exportStatus = ""
+        editsStatus = ""
+        projectURL = nil
+        savedAdjustments = nil
+        savedExportFormat = nil
+        isRAWSource = false
         recordCommand("Workspace cleared")
     }
 
@@ -157,26 +242,16 @@ final class AppModel: ObservableObject {
         schedulePreviewRender()
     }
 
-    func setAdjustments(apiValues: [String: Any]) {
+    func setAdjustments(apiValues: JSONObject) {
         adjustments.apply(apiValues: apiValues)
         schedulePreviewRender()
         let formatted = apiValues
             .compactMap { entry -> (key: String, value: Double)? in
                 let key = entry.key
-                let value = entry.value
                 guard AdjustmentControl(rawValue: key) != nil else {
                     return nil
                 }
-                if let value = value as? Double {
-                    return (key, value)
-                }
-                if let value = value as? Int {
-                    return (key, Double(value))
-                }
-                if let value = value as? NSNumber {
-                    return (key, value.doubleValue)
-                }
-                return nil
+                return entry.value.numberValue.map { (key, $0) }
             }
             .sorted { $0.key < $1.key }
             .map { "\($0.key)=\(String(format: "%.2f", $0.value))" }
@@ -184,7 +259,7 @@ final class AppModel: ObservableObject {
         recordCommand("Adjustments updated", detail: formatted.isEmpty ? nil : formatted)
     }
 
-    func exportAdjustedImage(to outputURL: URL, quality: Double) async throws -> ImageExportResult {
+    func exportAdjustedImage(to outputURL: URL, quality: Double = ImageExporter.maximumJPEGQuality, format: RenderedExportFormat? = nil) async throws -> ImageExportResult {
         guard let selectedImagePath else {
             throw ImageExportError.noImageLoaded
         }
@@ -193,7 +268,8 @@ final class AppModel: ObservableObject {
             sourcePath: selectedImagePath,
             outputPath: outputURL.path,
             adjustments: adjustments,
-            quality: quality
+            quality: quality,
+            format: format
         )
         recordCommand("Image exported", detail: outputURL.lastPathComponent)
         return result
@@ -204,7 +280,7 @@ final class AppModel: ObservableObject {
         exportStatus = "Exporting…"
         defer { isExporting = false }
         do {
-            _ = try await exportAdjustedImage(to: outputURL, quality: 0.94)
+            _ = try await exportAdjustedImage(to: outputURL, format: exportFormat)
             exportStatus = "Exported \(outputURL.lastPathComponent)"
         } catch {
             exportStatus = error.localizedDescription
@@ -218,50 +294,132 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func readImage(from url: URL) async -> LoadedImageFile? {
-        let imageData = await Task.detached(priority: .userInitiated) {
-            try? Data(contentsOf: url, options: [.mappedIfSafe])
+    func saveEdits(to document: URL) async throws {
+        guard let selectedImagePath, beforeAfterComparison == nil else { throw ImageExportError.noImageLoaded }
+        let source = URL(fileURLWithPath: selectedImagePath)
+        let snapshot = adjustments.apiRepresentation
+        let format = exportFormat
+        let generation = imageLoadGeneration
+        isSavingEdits = true
+        defer { isSavingEdits = false }
+        try await Task.detached {
+            try PhotoProjectStore.save(source: source, document: document, adjustments: snapshot, format: format)
         }.value
+        guard generation == imageLoadGeneration else { return }
+        projectURL = document
+        savedAdjustments = snapshot
+        savedExportFormat = format
+        editsStatus = "Saved edits for \(source.lastPathComponent)"
+    }
 
-        guard let imageData, let image = NSImage(data: imageData) else {
+    @discardableResult
+    func openEdits(from document: URL) async -> Bool {
+        do {
+            let generation = imageLoadGeneration
+            let project = try await Task.detached { try PhotoProjectStore.load(document) }.value
+            guard generation == imageLoadGeneration else { return false }
+            guard await loadImage(from: project.sourceURL(relativeTo: document), restoringEdits: false) else { return false }
+            restore(project, document: document)
+            schedulePreviewRender()
+            return true
+        } catch {
+            editsStatus = error.localizedDescription
+            return false
+        }
+    }
+
+    private func restore(_ project: PhotoProject, document: URL) {
+        adjustments.reset()
+        adjustments.apply(apiValues: project.adjustments.mapValues(JSONValue.number))
+        exportFormat = project.exportFormat
+        savedAdjustments = adjustments.apiRepresentation
+        savedExportFormat = project.exportFormat
+        projectURL = document
+        editsStatus = "Edits saved"
+    }
+
+    func confirmDiscardEdits() -> Bool {
+        guard hasUnsavedEdits else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Discard unsaved edits?"
+        alert.informativeText = "Save your edits first if you want to continue editing this photograph later."
+        alert.addButton(withTitle: "Keep editing")
+        alert.addButton(withTitle: "Discard edits")
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+
+    private func readImage(from url: URL) async -> LoadedImageFile? {
+        guard let preview = await ImageSourceLoader.loadPreview(
+            from: url,
+            maxDimension: Self.previewMaximumDimension
+        ) else {
             return nil
         }
+        let image = NSImage(
+            cgImage: preview.image,
+            size: NSSize(width: preview.image.width, height: preview.image.height)
+        )
 
         return LoadedImageFile(
             image: image,
             name: url.lastPathComponent,
             path: url.path,
-            size: image.size
+            size: preview.orientedPixelSize
         )
     }
 
+    private func beginImageLoad() -> Int {
+        imageLoadGeneration += 1
+        cancelPreviewRender()
+        return imageLoadGeneration
+    }
 
     private func schedulePreviewRender() {
         guard let selectedImagePath, beforeAfterComparison == nil else {
             return
         }
 
-        previewRenderTask?.cancel()
+        cancelPreviewRender()
+        let generation = previewRenderGeneration
         let sourcePath = selectedImagePath
         let currentAdjustments = adjustments
         isRenderingPreview = true
         previewRenderTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(80))
-            guard !Task.isCancelled else { return }
+            defer {
+                if let self, self.previewRenderGeneration == generation {
+                    self.previewRenderTask = nil
+                    self.isRenderingPreview = false
+                }
+            }
 
-            let preview = try? await ImageExporter.renderAdjustedPreview(
-                sourcePath: sourcePath,
-                adjustments: currentAdjustments,
-                maxDimension: 2400
-            )
-            guard !Task.isCancelled, let self, self.selectedImagePath == sourcePath else {
+            do {
+                try await Task.sleep(for: .milliseconds(80))
+                let preview = try await ImageExporter.renderAdjustedPreview(
+                    sourcePath: sourcePath,
+                    adjustments: currentAdjustments,
+                    maxDimension: Self.previewMaximumDimension
+                )
+                try Task.checkCancellation()
+                guard let self,
+                      self.previewRenderGeneration == generation,
+                      self.selectedImagePath == sourcePath,
+                      self.beforeAfterComparison == nil else {
+                    return
+                }
+                self.adjustedPreviewImage = preview
+            } catch is CancellationError {
+                return
+            } catch {
                 return
             }
-            if let preview {
-                self.adjustedPreviewImage = preview
-            }
-            self.isRenderingPreview = false
         }
+    }
+
+    private func cancelPreviewRender() {
+        previewRenderGeneration += 1
+        previewRenderTask?.cancel()
+        previewRenderTask = nil
+        isRenderingPreview = false
     }
 }
 
@@ -271,12 +429,11 @@ struct LoadedImageFile {
     let path: String
     let size: CGSize
 
-    var apiRepresentation: [String: Any] {
+    var apiRepresentation: JSONObject {
         [
-            "name": name,
-            "path": path,
-            "width": size.width,
-            "height": size.height
+            "name": .string(name),
+            "width": .number(Double(size.width)),
+            "height": .number(Double(size.height))
         ]
     }
 }
@@ -285,18 +442,10 @@ struct BeforeAfterComparison {
     let before: LoadedImageFile
     let after: LoadedImageFile
 
-    var apiRepresentation: [String: Any] {
+    var apiRepresentation: JSONObject {
         [
-            "before": before.apiRepresentation,
-            "after": after.apiRepresentation
+            "before": .object(before.apiRepresentation),
+            "after": .object(after.apiRepresentation)
         ]
     }
-}
-
-enum PhaseOnePaths {
-    static let phaseRoot = ProcessInfo.processInfo.environment["PHOTO_EDITOR_PHASE_ROOT"]
-        .map { URL(fileURLWithPath: $0, isDirectory: true) }
-    static let rapidRAW = phaseRoot?.appendingPathComponent("RapidRAW", isDirectory: true)
-    static let tuiImageEditor = phaseRoot?.appendingPathComponent("tui.image-editor", isDirectory: true)
-    static let omniGen = phaseRoot?.appendingPathComponent("OmniGen", isDirectory: true)
 }

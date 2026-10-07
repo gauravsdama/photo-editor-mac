@@ -11,8 +11,12 @@ Human editorial source of truth for the first-party Phase 1 macOS app. The surro
 | `photo.app.gpu` | Diagnostics | Rendering device / Check again | Diagnose rendering device | Keep | approved | `ContentView.swift`, `GPUStatus.swift` | Secondary sidebar information. |
 | `photo.app.command-log` | Sidebar | Automation history / No edits from automation yet. | Show automation history | Keep | approved | `ContentView.swift` | Does not advertise AI or imply waiting. |
 | `photo.app.export` | Toolbar / export state | Export photo… / Exporting… / Exported {filename} | Save an edited copy | Keep | approved | `ContentView.swift`, `AppModel.swift` | Native save panel supplies destination and cancellation. |
-| `photo.api.error` | Action API error | Could not open image at {path} | Explain failure | Couldn’t open that image. Check the file format and permissions. | inventory | `AppModel+ActionAPI.swift` | UI should not reveal full personal paths by default. |
+| `photo.api.error` | Action API error | Could not open image. | Explain failure | Couldn’t open that image. Check the file format and permissions. | inventory | `AppModel+ActionAPI.swift` | API responses do not reveal full personal paths. |
 
 ## Coverage gaps
 
-Unsupported-format recovery, memory-pressure recovery, unsaved changes, and destructive reset language do not yet have complete user-facing states. The opt-in loopback Action API still needs token authentication before it is suitable for general release.
+Owner-requested RAW workflow copy: Open edits…; Save edits…; Save XMP sidecar…; Export rendered image…; Export format; TIFF · 32-bit float · maximum precision; TIFF · 16-bit · lossless; JPEG · maximum quality; Original RAW + edits; Original photo + edits; Unsaved edits; Edits saved; Saved edits for {filename}; Edits could not be opened; Edits could not be saved. These distinguish original-preserving edit persistence from rendered output.
+
+Additional persistence/recovery copy: Save project…; No saved edits; Discard unsaved edits?; Save your edits first if you want to continue editing this photograph later.; Keep editing; Discard edits; The RAW sensor data could not be decoded on this Mac. First-party document validation errors are enumerated in the full extracted inventory.
+
+Unsupported-format recovery, memory-pressure recovery, unsaved changes, and destructive reset language do not yet have complete user-facing states. The opt-in loopback Action API requires a per-launch bearer token for non-health requests.

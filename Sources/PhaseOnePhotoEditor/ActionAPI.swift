@@ -1,18 +1,22 @@
 import Foundation
 
-struct ActionAPIRequest: @unchecked Sendable {
+struct ActionAPIRequest: Sendable {
     let method: String
     let path: String
     let query: [String: String]
     let headers: [String: String]
-    let body: [String: Any]
+    let body: JSONObject
 }
 
-struct ActionAPIResponse: @unchecked Sendable {
+struct ActionAPIResponse: Sendable, Equatable {
     let statusCode: Int
-    let body: Any?
+    let body: JSONValue?
 
-    static func json(statusCode: Int = 200, _ body: Any) -> ActionAPIResponse {
+    static func json(statusCode: Int = 200, _ body: JSONObject) -> ActionAPIResponse {
+        ActionAPIResponse(statusCode: statusCode, body: .object(body))
+    }
+
+    static func json(statusCode: Int = 200, _ body: JSONValue) -> ActionAPIResponse {
         ActionAPIResponse(statusCode: statusCode, body: body)
     }
 
@@ -21,14 +25,14 @@ struct ActionAPIResponse: @unchecked Sendable {
     }
 
     static func error(statusCode: Int, message: String, suggestion: String? = nil) -> ActionAPIResponse {
-        var payload: [String: Any] = [
-            "ok": false,
-            "error": message
+        var payload: JSONObject = [
+            "ok": .bool(false),
+            "error": .string(message)
         ]
         if let suggestion {
-            payload["suggestion"] = suggestion
+            payload["suggestion"] = .string(suggestion)
         }
-        return ActionAPIResponse(statusCode: statusCode, body: payload)
+        return ActionAPIResponse(statusCode: statusCode, body: .object(payload))
     }
 
     func httpData() -> Data {
@@ -36,7 +40,9 @@ struct ActionAPIResponse: @unchecked Sendable {
         let bodyData: Data
 
         if let body {
-            bodyData = (try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            bodyData = (try? encoder.encode(body)) ?? Data()
         } else {
             bodyData = Data()
         }
@@ -47,7 +53,7 @@ struct ActionAPIResponse: @unchecked Sendable {
             "Content-Length: \(bodyData.count)",
             "Access-Control-Allow-Origin: http://127.0.0.1",
             "Access-Control-Allow-Methods: GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers: Content-Type",
+            "Access-Control-Allow-Headers: Content-Type, Authorization",
             "Connection: close",
             "",
             ""
@@ -65,8 +71,13 @@ enum HTTPStatus {
         case 200: "OK"
         case 204: "No Content"
         case 400: "Bad Request"
+        case 401: "Unauthorized"
+        case 408: "Request Timeout"
+        case 413: "Content Too Large"
+        case 415: "Unsupported Media Type"
         case 404: "Not Found"
         case 405: "Method Not Allowed"
+        case 431: "Request Header Fields Too Large"
         case 500: "Internal Server Error"
         case 503: "Service Unavailable"
         default: "OK"
@@ -75,55 +86,156 @@ enum HTTPStatus {
 }
 
 enum ActionAPIParser {
-    static func parse(data: Data) throws -> ActionAPIRequest {
-        guard let raw = String(data: data, encoding: .utf8) else {
+    static let maximumHeaderBytes = 16 * 1_024
+    static let maximumBodyBytes = 1_024 * 1_024
+    private static let headerTerminator = Data([13, 10, 13, 10])
+
+    static func expectedRequestLength(in data: Data) throws -> Int? {
+        guard let headerRange = data.range(of: headerTerminator) else {
+            if data.count > maximumHeaderBytes {
+                throw ActionAPIParserError.headersTooLarge
+            }
+            return nil
+        }
+
+        let headerByteCount = headerRange.lowerBound
+        guard headerByteCount <= maximumHeaderBytes else {
+            throw ActionAPIParserError.headersTooLarge
+        }
+        let headerData = data[..<headerByteCount]
+        guard let headerBlock = String(data: headerData, encoding: .utf8) else {
             throw ActionAPIParserError.invalidEncoding
         }
+        let (_, headers) = try parseHead(headerBlock)
 
-        let parts = raw.components(separatedBy: "\r\n\r\n")
-        guard let headerBlock = parts.first else {
+        if headers["transfer-encoding"] != nil {
+            throw ActionAPIParserError.unsupportedTransferEncoding
+        }
+        let bodyLength = try contentLength(from: headers)
+        guard bodyLength <= maximumBodyBytes else {
+            throw ActionAPIParserError.bodyTooLarge
+        }
+        return headerRange.upperBound + bodyLength
+    }
+
+    static func parse(data: Data) throws -> ActionAPIRequest {
+        guard let expectedLength = try expectedRequestLength(in: data) else {
+            throw ActionAPIParserError.incompleteRequest
+        }
+        guard data.count >= expectedLength else {
+            throw ActionAPIParserError.incompleteRequest
+        }
+        guard data.count == expectedLength,
+              let headerRange = data.range(of: headerTerminator) else {
             throw ActionAPIParserError.invalidRequest
         }
-
-        let headerLines = headerBlock.components(separatedBy: "\r\n")
-        guard let requestLine = headerLines.first else {
-            throw ActionAPIParserError.invalidRequest
+        let headerData = data[..<headerRange.lowerBound]
+        guard let headerBlock = String(data: headerData, encoding: .utf8) else {
+            throw ActionAPIParserError.invalidEncoding
         }
-
-        let requestParts = requestLine.split(separator: " ", maxSplits: 2).map(String.init)
-        guard requestParts.count >= 2 else {
-            throw ActionAPIParserError.invalidRequest
+        let (requestParts, headers) = try parseHead(headerBlock)
+        let method = requestParts.method
+        let target = requestParts.target
+        guard target.hasPrefix("/"), let components = URLComponents(string: target) else {
+            throw ActionAPIParserError.invalidRequestTarget
         }
-
-        let method = requestParts[0].uppercased()
-        let target = requestParts[1]
-        let components = URLComponents(string: target)
-        let path = components?.path.isEmpty == false ? components?.path ?? target : target
-        let query = Dictionary(uniqueKeysWithValues: (components?.queryItems ?? []).compactMap { item in
-            item.value.map { (item.name, $0) }
-        })
-        var headers: [String: String] = [:]
-        for line in headerLines.dropFirst() {
-            let parts = line.split(separator: ":", maxSplits: 1).map { String($0).trimmingCharacters(in: .whitespaces) }
-            if parts.count == 2 {
-                headers[parts[0].lowercased()] = parts[1]
+        let path = components.path.isEmpty ? "/" : components.path
+        var query: [String: String] = [:]
+        for item in components.queryItems ?? [] {
+            if let value = item.value {
+                query[item.name] = value
             }
         }
 
-        let bodyString = parts.dropFirst().joined(separator: "\r\n\r\n")
-        let bodyData = Data(bodyString.utf8)
-        let body: [String: Any]
+        let bodyData = data[headerRange.upperBound...]
+        let body: JSONObject
         if bodyData.isEmpty {
             body = [:]
         } else {
-            body = (try? JSONSerialization.jsonObject(with: bodyData)) as? [String: Any] ?? [:]
+            let mediaType = headers["content-type"]?
+                .split(separator: ";", maxSplits: 1)
+                .first?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard mediaType == "application/json" else {
+                throw ActionAPIParserError.unsupportedMediaType
+            }
+            guard let value = try? JSONDecoder().decode(JSONValue.self, from: Data(bodyData)),
+                  let dictionary = value.objectValue else {
+                throw ActionAPIParserError.invalidJSONBody
+            }
+            body = dictionary
         }
 
         return ActionAPIRequest(method: method, path: path, query: query, headers: headers, body: body)
     }
+
+    private static func parseHead(_ headerBlock: String) throws -> (
+        request: (method: String, target: String),
+        headers: [String: String]
+    ) {
+        let headerLines = headerBlock.components(separatedBy: "\r\n")
+        guard let requestLine = headerLines.first else {
+            throw ActionAPIParserError.invalidRequest
+        }
+        let requestParts = requestLine.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        guard requestParts.count == 3,
+              requestParts[2] == "HTTP/1.1",
+              !requestParts[0].isEmpty else {
+            throw ActionAPIParserError.invalidRequest
+        }
+
+        var headers: [String: String] = [:]
+        for line in headerLines.dropFirst() {
+            guard !line.isEmpty,
+                  let separator = line.firstIndex(of: ":") else {
+                throw ActionAPIParserError.invalidRequest
+            }
+            let name = line[..<separator].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, headers[name] == nil else {
+                throw ActionAPIParserError.invalidRequest
+            }
+            headers[name] = value
+        }
+        return ((requestParts[0].uppercased(), requestParts[1]), headers)
+    }
+
+    private static func contentLength(from headers: [String: String]) throws -> Int {
+        guard let rawValue = headers["content-length"] else {
+            return 0
+        }
+        guard !rawValue.isEmpty,
+              rawValue.allSatisfy(\.isNumber),
+              let length = Int(rawValue) else {
+            throw ActionAPIParserError.invalidContentLength
+        }
+        return length
+    }
 }
 
-enum ActionAPIParserError: Error {
+enum ActionAPIParserError: Error, Equatable {
     case invalidEncoding
     case invalidRequest
+    case invalidRequestTarget
+    case invalidContentLength
+    case incompleteRequest
+    case invalidJSONBody
+    case unsupportedMediaType
+    case unsupportedTransferEncoding
+    case headersTooLarge
+    case bodyTooLarge
+
+    var statusCode: Int {
+        switch self {
+        case .headersTooLarge:
+            431
+        case .bodyTooLarge:
+            413
+        case .unsupportedMediaType:
+            415
+        default:
+            400
+        }
+    }
 }

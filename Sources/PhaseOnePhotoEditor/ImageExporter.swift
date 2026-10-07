@@ -2,12 +2,13 @@ import AppKit
 import CoreImage
 import Foundation
 import Metal
+import ImageIO
+import UniformTypeIdentifiers
 
 enum ImageExportError: Error, LocalizedError {
     case noImageLoaded
     case couldNotCreateInputImage(String)
     case couldNotRenderImage
-    case couldNotEncodeJPEG
 
     var errorDescription: String? {
         switch self {
@@ -17,8 +18,6 @@ enum ImageExportError: Error, LocalizedError {
             "Could not create a Core Image input image from \(path)."
         case .couldNotRenderImage:
             "Could not render the adjusted image."
-        case .couldNotEncodeJPEG:
-            "Could not encode the adjusted image as JPEG."
         }
     }
 }
@@ -30,104 +29,161 @@ struct ImageExportResult {
     let height: Int
     let adjustments: [String: Double]
 
-    var apiRepresentation: [String: Any] {
+    var apiRepresentation: JSONObject {
         [
-            "sourcePath": sourcePath,
-            "outputPath": outputPath,
-            "width": width,
-            "height": height,
-            "adjustments": adjustments
+            "sourceName": .string(URL(fileURLWithPath: sourcePath).lastPathComponent),
+            "outputName": .string(URL(fileURLWithPath: outputPath).lastPathComponent),
+            "width": .number(Double(width)),
+            "height": .number(Double(height)),
+            "adjustments": .object(adjustments.mapValues(JSONValue.number))
         ]
     }
 }
 
 enum ImageExporter {
+    /// ImageIO's highest JPEG encoder quality. JPEG is still a lossy delivery format.
+    static let maximumJPEGQuality: Double = 1.0
+    private static let renderer = ImageRenderEngine()
+
     static func renderAdjustedPreview(
         sourcePath: String,
         adjustments: AdjustmentState,
         maxDimension: CGFloat
     ) async throws -> NSImage {
-        try await Task.detached(priority: .userInitiated) {
-            guard var image = CIImage(
-                contentsOf: URL(fileURLWithPath: sourcePath),
-                options: [.applyOrientationProperty: true]
-            ) else {
-                throw ImageExportError.couldNotCreateInputImage(sourcePath)
-            }
-
-            let originalExtent = image.extent
-            image = apply(adjustments: adjustments, to: image, originalExtent: originalExtent)
-            let longestEdge = max(originalExtent.width, originalExtent.height)
-            let scale = longestEdge > maxDimension ? maxDimension / longestEdge : 1
-            if scale < 1 {
-                let filter = CIFilter(name: "CILanczosScaleTransform")
-                filter?.setValue(image, forKey: kCIInputImageKey)
-                filter?.setValue(scale, forKey: kCIInputScaleKey)
-                filter?.setValue(1.0, forKey: kCIInputAspectRatioKey)
-                image = filter?.outputImage ?? image
-            }
-
-            let context = MTLCreateSystemDefaultDevice().map(CIContext.init(mtlDevice:)) ?? CIContext()
-            guard let cgImage = context.createCGImage(image, from: image.extent) else {
-                throw ImageExportError.couldNotRenderImage
-            }
-            return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-        }.value
+        try await renderer.renderAdjustedPreview(
+            sourcePath: sourcePath,
+            adjustments: adjustments,
+            maxDimension: maxDimension
+        )
     }
 
     static func exportAdjustedImage(
         sourcePath: String,
         outputPath: String,
         adjustments: AdjustmentState,
-        quality: Double
+        quality: Double = maximumJPEGQuality,
+        format: RenderedExportFormat? = nil
     ) async throws -> ImageExportResult {
-        try await Task.detached(priority: .userInitiated) {
-            let sourceURL = URL(fileURLWithPath: sourcePath)
-            let outputURL = URL(fileURLWithPath: outputPath)
+        try await renderer.exportAdjustedImage(
+            sourcePath: sourcePath,
+            outputPath: outputPath,
+            adjustments: adjustments,
+            quality: quality,
+            format: format
+        )
+    }
+}
 
-            guard var image = CIImage(contentsOf: sourceURL, options: [.applyOrientationProperty: true]) else {
-                throw ImageExportError.couldNotCreateInputImage(sourcePath)
-            }
-            let originalExtent = image.extent
+private actor ImageRenderEngine {
+    private let context: CIContext
+    private let outputColorSpace: CGColorSpace
 
-            image = apply(adjustments: adjustments, to: image, originalExtent: originalExtent)
-
-            let context: CIContext
-            if let device = MTLCreateSystemDefaultDevice() {
-                context = CIContext(mtlDevice: device)
-            } else {
-                context = CIContext()
-            }
-
-            guard let cgImage = context.createCGImage(image, from: originalExtent) else {
-                throw ImageExportError.couldNotRenderImage
-            }
-
-            let bitmap = NSBitmapImageRep(cgImage: cgImage)
-            guard let data = bitmap.representation(
-                using: .jpeg,
-                properties: [.compressionFactor: quality.clamped(to: 0.1...1.0)]
-            ) else {
-                throw ImageExportError.couldNotEncodeJPEG
-            }
-
-            try FileManager.default.createDirectory(
-                at: outputURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try data.write(to: outputURL, options: [.atomic])
-
-            return ImageExportResult(
-                sourcePath: sourcePath,
-                outputPath: outputPath,
-                width: cgImage.width,
-                height: cgImage.height,
-                adjustments: adjustments.apiRepresentation
-            )
-        }.value
+    init() {
+        let options: [CIContextOption: Any] = [
+            .workingColorSpace: CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!,
+            .workingFormat: CIFormat.RGBAf.rawValue
+        ]
+        context = MTLCreateSystemDefaultDevice().map { CIContext(mtlDevice: $0, options: options) } ?? CIContext(options: options)
+        outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     }
 
-    private static func apply(adjustments: AdjustmentState, to inputImage: CIImage, originalExtent: CGRect) -> CIImage {
+    func renderAdjustedPreview(
+        sourcePath: String,
+        adjustments: AdjustmentState,
+        maxDimension: CGFloat
+    ) throws -> NSImage {
+        try Task.checkCancellation()
+        var image = try PhotoSource.image(at: URL(fileURLWithPath: sourcePath), maximumDimension: maxDimension)
+        let originalExtent = image.extent
+        image = ImageFilterGraph.apply(adjustments: adjustments, to: image, originalExtent: originalExtent)
+
+        try Task.checkCancellation()
+        guard let cgImage = context.createCGImage(image, from: image.extent, format: .RGBAh,
+            colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!) else {
+            throw ImageExportError.couldNotRenderImage
+        }
+        try Task.checkCancellation()
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    func exportAdjustedImage(
+        sourcePath: String,
+        outputPath: String,
+        adjustments: AdjustmentState,
+        quality: Double,
+        format: RenderedExportFormat?
+    ) throws -> ImageExportResult {
+        try Task.checkCancellation()
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        let outputURL = URL(fileURLWithPath: outputPath)
+        guard sourceURL.resolvingSymlinksInPath().standardizedFileURL != outputURL.resolvingSymlinksInPath().standardizedFileURL else {
+            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: outputPath])
+        }
+        let exportFormat = try format ?? RenderedExportFormat.inferred(from: outputURL)
+        let allowedExtensions = exportFormat == .jpeg ? ["jpg", "jpeg"] : ["tif", "tiff"]
+        guard allowedExtensions.contains(outputURL.pathExtension.lowercased()) else {
+            throw PhotoWorkflowError("The filename extension does not match the export format.")
+        }
+        var image = try PhotoSource.image(at: sourceURL)
+        let originalExtent = image.extent
+        image = ImageFilterGraph.apply(adjustments: adjustments, to: image, originalExtent: originalExtent)
+
+        let fileManager = FileManager.default
+        let outputDirectory = outputURL.deletingLastPathComponent()
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: outputURL.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            throw CocoaError(.fileWriteInvalidFileName, userInfo: [NSFilePathErrorKey: outputPath])
+        }
+        try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        let temporaryURL = outputDirectory.appendingPathComponent(
+            ".\(outputURL.lastPathComponent).\(UUID().uuidString).tmp"
+        )
+        defer { try? fileManager.removeItem(at: temporaryURL) }
+
+        try Task.checkCancellation()
+        let colorSpace: CGColorSpace
+        if exportFormat == .tiffFloat32 {
+            colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!
+        } else if exportFormat == .tiff16 {
+            colorSpace = image.colorSpace.flatMap { $0.model == .rgb && !CGColorSpaceUsesExtendedRange($0) ? $0 : nil }
+                ?? CGColorSpace(name: CGColorSpace.displayP3)!
+        } else { colorSpace = outputColorSpace }
+        let pixelFormat: CIFormat = exportFormat == .tiffFloat32 ? .RGBAf : (exportFormat == .tiff16 ? .RGBA16 : .RGBA8)
+        guard let rendered = context.createCGImage(image, from: image.extent, format: pixelFormat, colorSpace: colorSpace, deferred: true),
+              let destination = CGImageDestinationCreateWithURL(temporaryURL as CFURL, exportFormat.contentType.identifier as CFString, 1, nil) else {
+            throw ImageExportError.couldNotRenderImage
+        }
+        var properties = PhotoSource.metadata(at: sourceURL, width: rendered.width, height: rendered.height)
+        if exportFormat == .jpeg {
+            properties[kCGImageDestinationLossyCompressionQuality as String] = quality.clamped(to: 0.1...1.0)
+        } else {
+            var tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+            tiff[kCGImagePropertyTIFFCompression as String] = 1 // Uncompressed: no lossy encoder.
+            properties[kCGImagePropertyTIFFDictionary as String] = tiff
+        }
+        CGImageDestinationAddImage(destination, rendered, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { throw ImageExportError.couldNotRenderImage }
+        try Task.checkCancellation()
+
+        if fileManager.fileExists(atPath: outputURL.path) {
+            _ = try fileManager.replaceItemAt(outputURL, withItemAt: temporaryURL)
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: outputURL)
+        }
+
+        return ImageExportResult(
+            sourcePath: sourcePath,
+            outputPath: outputPath,
+            width: Int(originalExtent.width),
+            height: Int(originalExtent.height),
+            adjustments: adjustments.apiRepresentation
+        )
+    }
+
+}
+
+enum ImageFilterGraph {
+    static func apply(adjustments: AdjustmentState, to inputImage: CIImage, originalExtent: CGRect) -> CIImage {
         var image = inputImage
 
         let exposure = adjustments.value(for: .exposure)

@@ -6,15 +6,12 @@ struct CommandLogEntry: Identifiable {
     let title: String
     let detail: String?
 
-    var apiRepresentation: [String: Any] {
-        var payload: [String: Any] = [
-            "id": id.uuidString,
-            "timestamp": ISO8601DateFormatter().string(from: timestamp),
-            "title": title
+    var apiRepresentation: JSONObject {
+        let payload: JSONObject = [
+            "id": .string(id.uuidString),
+            "timestamp": .string(ISO8601DateFormatter().string(from: timestamp)),
+            "title": .string(title)
         ]
-        if let detail {
-            payload["detail"] = detail
-        }
         return payload
     }
 }

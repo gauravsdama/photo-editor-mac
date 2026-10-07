@@ -18,6 +18,7 @@ struct ContentView: View {
             allowsMultipleSelection: false
         ) { result in
             if case let .success(urls) = result, let url = urls.first {
+                guard model.confirmDiscardEdits() else { return }
                 Task {
                     await model.loadImage(from: url)
                 }
@@ -131,12 +132,7 @@ private struct GPUStatusView: View {
 
             StatusRow(label: "Apple Silicon build", value: status.isAppleSiliconBuild)
             StatusRow(label: "Unified memory", value: status.hasUnifiedMemory)
-            StatusRow(label: "Virtual GPU ready", value: status.looksLikeAppleSiliconVirtualGPU)
-
             Text(status.recommendedRenderingBackend)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text(status.recommendedAIBackend)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -202,16 +198,25 @@ private struct ToolbarView: View {
             .disabled(model.selectedImage == nil)
 
             Button {
-                model.clearWorkspace()
+                if model.confirmDiscardEdits() { model.clearWorkspace() }
             } label: {
                 Label("Clear", systemImage: "xmark.circle")
             }
             .disabled(model.selectedImage == nil && model.beforeAfterComparison == nil)
 
+            Menu("Save edits…") {
+                Button("Save project…") { saveEdits(sidecar: false) }
+                    .disabled(model.selectedImage == nil || model.beforeAfterComparison != nil)
+                Button("Save XMP sidecar…") { saveEdits(sidecar: true) }
+                    .disabled(model.selectedImage == nil || model.beforeAfterComparison != nil)
+                Button("Open edits…") { openEdits() }
+            }
+            .disabled(model.isSavingEdits)
+
             Button {
                 exportPhoto()
             } label: {
-                Label("Export photo…", systemImage: "square.and.arrow.up")
+                Label("Export rendered image…", systemImage: "square.and.arrow.up")
             }
             .disabled(model.selectedImage == nil || model.isExporting)
 
@@ -223,28 +228,63 @@ private struct ToolbarView: View {
                     .accessibilityLabel("Updating preview")
             }
 
-            if !model.exportStatus.isEmpty {
-                Text(model.exportStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Text(model.selectedImageName)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.selectedImageName).lineLimit(1).truncationMode(.middle)
+                if model.selectedImage != nil {
+                    Text(model.isRAWSource ? "Original RAW + edits" : "Original photo + edits")
+                    Text(model.hasUnsavedEdits ? "Unsaved edits" : (model.projectURL == nil ? "No saved edits" : "Edits saved"))
+                }
+                if !model.editsStatus.isEmpty { Text(model.editsStatus).lineLimit(2) }
+                if !model.exportStatus.isEmpty { Text(model.exportStatus).lineLimit(2) }
+            }
+            Spacer()
+            Picker("Export format", selection: $model.exportFormat) {
+                ForEach(RenderedExportFormat.allCases) { format in Text(format.title).tag(format) }
+            }
+            .frame(maxWidth: 240)
+            .disabled(model.isExporting)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+    }
+
+    private func saveEdits(sidecar: Bool) {
+        guard model.selectedImagePath != nil, model.beforeAfterComparison == nil else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: sidecar ? "xmp" : "photoedit") ?? .data]
+        panel.nameFieldStringValue = sidecar
+            ? (model.selectedImageName as NSString).deletingPathExtension + ".xmp"
+            : model.selectedImageName + ".photoedit"
+        if let path = model.selectedImagePath { panel.directoryURL = URL(fileURLWithPath: path).deletingLastPathComponent() }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do { try await model.saveEdits(to: url) }
+            catch { model.editsStatus = error.localizedDescription }
+        }
+    }
+
+    private func openEdits() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "photoedit") ?? .data, UTType(filenameExtension: "xmp") ?? .xml]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard model.confirmDiscardEdits() else { return }
+        Task { await model.openEdits(from: url) }
     }
 
     private func exportPhoto() {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.jpeg]
+        panel.allowedContentTypes = [model.exportFormat.contentType]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = model.selectedImageName.replacingOccurrences(
             of: ".[^.]+$",
-            with: "-edited.jpg",
+            with: "-edited." + model.exportFormat.fileExtension,
             options: .regularExpression
         )
         guard panel.runModal() == .OK, let url = panel.url else {

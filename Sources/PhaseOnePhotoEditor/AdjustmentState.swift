@@ -121,15 +121,15 @@ enum AdjustmentControl: String, CaseIterable, Identifiable {
         }
     }
 
-    var apiParameter: [String: Any] {
+    var apiParameter: JSONObject {
         [
-            "name": rawValue,
-            "label": title,
-            "type": "number",
-            "required": false,
-            "range": [range.lowerBound, range.upperBound],
-            "default": defaultValue,
-            "defaultVisible": isDefaultVisible
+            "name": .string(rawValue),
+            "label": .string(title),
+            "type": .string("number"),
+            "required": .bool(false),
+            "range": .numbers([range.lowerBound, range.upperBound]),
+            "default": .number(defaultValue),
+            "defaultVisible": .bool(isDefaultVisible)
         ]
     }
 
@@ -137,7 +137,7 @@ enum AdjustmentControl: String, CaseIterable, Identifiable {
         Set(allCases.filter(\.isDefaultVisible).map(\.rawValue))
     }
 
-    static var apiCatalog: [[String: Any]] {
+    static var apiCatalog: [JSONObject] {
         allCases.map(\.apiParameter)
     }
 }
@@ -163,9 +163,9 @@ struct AdjustmentState {
         values[control.rawValue] = value.clamped(to: control.range)
     }
 
-    mutating func apply(apiValues: [String: Any]) {
+    mutating func apply(apiValues: JSONObject) {
         for control in AdjustmentControl.allCases {
-            guard let value = Self.doubleValue(from: apiValues[control.rawValue]) else {
+            guard let value = apiValues[control.rawValue]?.numberValue else {
                 continue
             }
             setValue(value, for: control)
@@ -178,18 +178,6 @@ struct AdjustmentState {
         })
     }
 
-    private static func doubleValue(from rawValue: Any?) -> Double? {
-        if let value = rawValue as? Double {
-            return value
-        }
-        if let value = rawValue as? Int {
-            return Double(value)
-        }
-        if let value = rawValue as? NSNumber {
-            return value.doubleValue
-        }
-        return nil
-    }
 }
 
 extension Comparable {

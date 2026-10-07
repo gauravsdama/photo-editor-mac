@@ -9,7 +9,6 @@ struct GPUStatus {
     let isLowPower: Bool
     let isRemovable: Bool
     let recommendedRenderingBackend: String
-    let recommendedAIBackend: String
 
     static let unknown = GPUStatus(
         deviceName: "Not checked",
@@ -18,25 +17,18 @@ struct GPUStatus {
         hasUnifiedMemory: false,
         isLowPower: false,
         isRemovable: false,
-        recommendedRenderingBackend: "Metal/Core Image pending device detection",
-        recommendedAIBackend: "PyTorch MPS pending environment check"
+        recommendedRenderingBackend: "Metal/Core Image pending device detection"
     )
 
-    var looksLikeAppleSiliconVirtualGPU: Bool {
-        isAvailable && isAppleSiliconBuild && hasUnifiedMemory && !isRemovable
-    }
-
-    var apiRepresentation: [String: Any] {
+    var apiRepresentation: JSONObject {
         [
-            "deviceName": deviceName,
-            "isAvailable": isAvailable,
-            "isAppleSiliconBuild": isAppleSiliconBuild,
-            "hasUnifiedMemory": hasUnifiedMemory,
-            "isLowPower": isLowPower,
-            "isRemovable": isRemovable,
-            "looksLikeAppleSiliconVirtualGPU": looksLikeAppleSiliconVirtualGPU,
-            "recommendedRenderingBackend": recommendedRenderingBackend,
-            "recommendedAIBackend": recommendedAIBackend
+            "deviceName": .string(deviceName),
+            "isAvailable": .bool(isAvailable),
+            "isAppleSiliconBuild": .bool(isAppleSiliconBuild),
+            "hasUnifiedMemory": .bool(hasUnifiedMemory),
+            "isLowPower": .bool(isLowPower),
+            "isRemovable": .bool(isRemovable),
+            "recommendedRenderingBackend": .string(recommendedRenderingBackend)
         ]
     }
 
@@ -49,8 +41,7 @@ struct GPUStatus {
                 hasUnifiedMemory: false,
                 isLowPower: false,
                 isRemovable: false,
-                recommendedRenderingBackend: "Unavailable",
-                recommendedAIBackend: "Unavailable"
+                recommendedRenderingBackend: "Unavailable"
             )
         }
 
@@ -61,8 +52,7 @@ struct GPUStatus {
             hasUnifiedMemory: device.hasUnifiedMemory,
             isLowPower: device.isLowPower,
             isRemovable: device.isRemovable,
-            recommendedRenderingBackend: "Metal device + CIContext(mtlDevice:)",
-            recommendedAIBackend: "PyTorch MPS sidecar with PYTORCH_ENABLE_MPS_FALLBACK=1"
+            recommendedRenderingBackend: "Metal device + CIContext(mtlDevice:)"
         )
     }
 

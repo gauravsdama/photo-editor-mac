@@ -9,13 +9,21 @@ permissions:
 
 jobs:
   build-and-test:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: swift --version
       - run: swift test
       - run: swift build -c release
+      - run: swift build -Xswiftc -warn-concurrency -Xswiftc -strict-concurrency=complete
+      - run: ./scripts/validate_repository.sh
       - run: >-
           python3 scripts/inventory-swift-ui-copy.py --check
           --source Sources/PhaseOnePhotoEditor
           --output docs/product/UI_COPY_FULL.md
           --name PhotoEditorMac
+      - run: ./scripts/package_macos.sh
+      - run: ./scripts/validate_macos_app.sh
+      - run: dist/PhotoEditor.app/Contents/MacOS/PhaseOnePhotoEditor --ui-smoke-test
