@@ -168,7 +168,9 @@ struct RAWWorkflowTests {
             adjustments: adjustments,
             maxDimension: 600
         )
-        #expect(neutralPreview.tiffRepresentation != adjustedPreview.tiffRepresentation)
+        let neutralData = try #require(neutralPreview.dataProvider?.data) as Data
+        let adjustedData = try #require(adjustedPreview.dataProvider?.data) as Data
+        #expect(neutralData != adjustedData)
 
         let result = try await ImageExporter.exportAdjustedImage(sourcePath: source.path, outputPath: output.path, adjustments: adjustments, quality: 1, format: .tiffFloat32)
         #expect(result.width == Int(native.extent.width))

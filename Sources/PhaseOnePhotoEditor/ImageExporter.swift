@@ -49,7 +49,7 @@ enum ImageExporter {
         sourcePath: String,
         adjustments: AdjustmentState,
         maxDimension: CGFloat
-    ) async throws -> NSImage {
+    ) async throws -> CGImage {
         try await renderer.renderAdjustedPreview(
             sourcePath: sourcePath,
             adjustments: adjustments,
@@ -91,19 +91,19 @@ private actor ImageRenderEngine {
         sourcePath: String,
         adjustments: AdjustmentState,
         maxDimension: CGFloat
-    ) throws -> NSImage {
+    ) throws -> CGImage {
         try Task.checkCancellation()
         var image = try PhotoSource.image(at: URL(fileURLWithPath: sourcePath), maximumDimension: maxDimension)
         let originalExtent = image.extent
         image = ImageFilterGraph.apply(adjustments: adjustments, to: image, originalExtent: originalExtent)
 
         try Task.checkCancellation()
-        guard let cgImage = context.createCGImage(image, from: image.extent, format: .RGBAh,
+        guard let rendered = context.createCGImage(image, from: image.extent, format: .RGBAh,
             colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!) else {
             throw ImageExportError.couldNotRenderImage
         }
         try Task.checkCancellation()
-        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        return rendered
     }
 
     func exportAdjustedImage(

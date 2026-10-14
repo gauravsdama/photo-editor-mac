@@ -155,10 +155,16 @@ final class AppModel: ObservableObject {
     @discardableResult
     func showBeforeAfter(before beforeURL: URL, after afterURL: URL) async -> Bool {
         let generation = beginImageLoad()
-        async let beforeResult = readImage(from: beforeURL)
-        async let afterResult = readImage(from: afterURL)
-        guard let before = await beforeResult,
-              let after = await afterResult,
+        async let beforePreview = ImageSourceLoader.loadPreview(
+            from: beforeURL,
+            maxDimension: Self.previewMaximumDimension
+        )
+        async let afterPreview = ImageSourceLoader.loadPreview(
+            from: afterURL,
+            maxDimension: Self.previewMaximumDimension
+        )
+        guard let beforeSource = await beforePreview,
+              let afterSource = await afterPreview,
               imageLoadGeneration == generation else {
             guard imageLoadGeneration == generation else {
                 return false
@@ -166,6 +172,8 @@ final class AppModel: ObservableObject {
             recordCommand("Before/after failed", detail: "Could not load comparison images.")
             return false
         }
+        let before = loadedImage(from: beforeSource, sourceURL: beforeURL)
+        let after = loadedImage(from: afterSource, sourceURL: afterURL)
 
         beforeAfterComparison = BeforeAfterComparison(before: before, after: after)
         selectedImage = after.image
@@ -355,6 +363,10 @@ final class AppModel: ObservableObject {
         ) else {
             return nil
         }
+        return loadedImage(from: preview, sourceURL: url)
+    }
+
+    private func loadedImage(from preview: ImageSourcePreview, sourceURL: URL) -> LoadedImageFile {
         let image = NSImage(
             cgImage: preview.image,
             size: NSSize(width: preview.image.width, height: preview.image.height)
@@ -362,8 +374,8 @@ final class AppModel: ObservableObject {
 
         return LoadedImageFile(
             image: image,
-            name: url.lastPathComponent,
-            path: url.path,
+            name: sourceURL.lastPathComponent,
+            path: sourceURL.path,
             size: preview.orientedPixelSize
         )
     }
@@ -394,7 +406,7 @@ final class AppModel: ObservableObject {
 
             do {
                 try await Task.sleep(for: .milliseconds(80))
-                let preview = try await ImageExporter.renderAdjustedPreview(
+                let rendered = try await ImageExporter.renderAdjustedPreview(
                     sourcePath: sourcePath,
                     adjustments: currentAdjustments,
                     maxDimension: Self.previewMaximumDimension
@@ -406,7 +418,10 @@ final class AppModel: ObservableObject {
                       self.beforeAfterComparison == nil else {
                     return
                 }
-                self.adjustedPreviewImage = preview
+                self.adjustedPreviewImage = NSImage(
+                    cgImage: rendered,
+                    size: NSSize(width: rendered.width, height: rendered.height)
+                )
             } catch is CancellationError {
                 return
             } catch {

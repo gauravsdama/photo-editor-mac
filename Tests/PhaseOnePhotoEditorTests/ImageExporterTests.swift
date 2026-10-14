@@ -53,7 +53,7 @@ struct ImageExporterTests {
                 adjustments: adjustments,
                 maxDimension: 1_200
             )
-            #expect(max(preview.size.width, preview.size.height) <= 1_200)
+            #expect(max(preview.width, preview.height) <= 1_200)
         }
 
         let result = try await ImageExporter.exportAdjustedImage(

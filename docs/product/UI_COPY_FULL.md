@@ -241,157 +241,157 @@ This file is an exact, source-extracted inventory of visible SwiftUI text, dynam
   },
   {
     "file": "AppModel.swift",
-    "line": 166,
+    "line": 172,
     "literal": "\"Before/after failed\"",
     "value": "Before/after failed"
   },
   {
     "file": "AppModel.swift",
-    "line": 166,
+    "line": 172,
     "literal": "\"Could not load comparison images.\"",
     "value": "Could not load comparison images."
   },
   {
     "file": "AppModel.swift",
-    "line": 173,
+    "line": 181,
     "literal": "\"Before/after comparison\"",
     "value": "Before/after comparison"
   },
   {
     "file": "AppModel.swift",
-    "line": 181,
+    "line": 189,
     "literal": "\"Before/after shown\"",
     "value": "Before/after shown"
   },
   {
     "file": "AppModel.swift",
-    "line": 181,
+    "line": 189,
     "literal": "\"\\(before.name) -> \\(after.name)\"",
     "value": "\\(before.name) -> \\(after.name)"
   },
   {
     "file": "AppModel.swift",
-    "line": 189,
+    "line": 197,
     "literal": "\"No image selected\"",
     "value": "No image selected"
   },
   {
     "file": "AppModel.swift",
-    "line": 201,
+    "line": 209,
     "literal": "\"Workspace cleared\"",
     "value": "Workspace cleared"
   },
   {
     "file": "AppModel.swift",
-    "line": 210,
+    "line": 218,
     "literal": "\"Visible controls updated\"",
     "value": "Visible controls updated"
   },
   {
     "file": "AppModel.swift",
-    "line": 210,
+    "line": 218,
     "literal": "\"Main \\(visibleAdjustmentControlIDs.count)\"",
     "value": "Main \\(visibleAdjustmentControlIDs.count)"
   },
   {
     "file": "AppModel.swift",
-    "line": 215,
+    "line": 223,
     "literal": "\"Visible controls updated\"",
     "value": "Visible controls updated"
   },
   {
     "file": "AppModel.swift",
-    "line": 215,
+    "line": 223,
     "literal": "\"All \\(visibleAdjustmentControlIDs.count)\"",
     "value": "All \\(visibleAdjustmentControlIDs.count)"
   },
   {
     "file": "AppModel.swift",
-    "line": 222,
+    "line": 230,
     "literal": "\"Visible controls updated\"",
     "value": "Visible controls updated"
   },
   {
     "file": "AppModel.swift",
-    "line": 222,
+    "line": 230,
     "literal": "\"\\(visibleAdjustmentControlIDs.count) controls\"",
     "value": "\\(visibleAdjustmentControlIDs.count) controls"
   },
   {
     "file": "AppModel.swift",
-    "line": 231,
+    "line": 239,
     "literal": "\"Visible controls updated\"",
     "value": "Visible controls updated"
   },
   {
     "file": "AppModel.swift",
-    "line": 231,
+    "line": 239,
     "literal": "\"\\(visibleAdjustmentControlIDs.count) controls\"",
     "value": "\\(visibleAdjustmentControlIDs.count) controls"
   },
   {
     "file": "AppModel.swift",
-    "line": 236,
+    "line": 244,
     "literal": "\"Adjustments reset\"",
     "value": "Adjustments reset"
   },
   {
     "file": "AppModel.swift",
-    "line": 259,
+    "line": 267,
     "literal": "\"Adjustments updated\"",
     "value": "Adjustments updated"
   },
   {
     "file": "AppModel.swift",
-    "line": 274,
+    "line": 282,
     "literal": "\"Image exported\"",
     "value": "Image exported"
   },
   {
     "file": "AppModel.swift",
-    "line": 280,
+    "line": 288,
     "literal": "\"Exporting…\"",
     "value": "Exporting…"
   },
   {
     "file": "AppModel.swift",
-    "line": 284,
+    "line": 292,
     "literal": "\"Exported \\(outputURL.lastPathComponent)\"",
     "value": "Exported \\(outputURL.lastPathComponent)"
   },
   {
     "file": "AppModel.swift",
-    "line": 312,
+    "line": 320,
     "literal": "\"Saved edits for \\(source.lastPathComponent)\"",
     "value": "Saved edits for \\(source.lastPathComponent)"
   },
   {
     "file": "AppModel.swift",
-    "line": 338,
+    "line": 346,
     "literal": "\"Edits saved\"",
     "value": "Edits saved"
   },
   {
     "file": "AppModel.swift",
-    "line": 344,
+    "line": 352,
     "literal": "\"Discard unsaved edits?\"",
     "value": "Discard unsaved edits?"
   },
   {
     "file": "AppModel.swift",
-    "line": 345,
+    "line": 353,
     "literal": "\"Save your edits first if you want to continue editing this photograph later.\"",
     "value": "Save your edits first if you want to continue editing this photograph later."
   },
   {
     "file": "AppModel.swift",
-    "line": 346,
+    "line": 354,
     "literal": "\"Keep editing\"",
     "value": "Keep editing"
   },
   {
     "file": "AppModel.swift",
-    "line": 347,
+    "line": 355,
     "literal": "\"Discard edits\"",
     "value": "Discard edits"
   },
