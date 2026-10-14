@@ -86,7 +86,7 @@ struct PerformanceBenchmarks {
     }
 
     @MainActor
-    private func measure<T>(_ operation: () async throws -> T) async rethrows -> (T, Duration) {
+    private func measure<T: Sendable>(_ operation: () async throws -> T) async rethrows -> (T, Duration) {
         let clock = ContinuousClock()
         let start = clock.now
         let value = try await operation()
