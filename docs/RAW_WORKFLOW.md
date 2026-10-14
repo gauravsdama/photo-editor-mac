@@ -30,6 +30,6 @@ Full-resolution floating-point TIFF requires substantially more memory and disk 
 
 ## Verification
 
-The portable suite generates fixtures to verify 16/32-bit output, floating-point sample flags, unclipped extended highlights, profile embedding, metadata, source preservation, project/sidecar restoration, third-party XMP preservation, invalid RAW rejection, and changed-original rejection. A real camera-file test runs when `PHOTO_EDITOR_RAW_FIXTURE` points to a local RAW; no personal or upstream photograph is copied into this repository.
+The portable suite generates fixtures to verify 16/32-bit output, floating-point sample flags, unclipped extended highlights, profile embedding, metadata, source preservation, project/sidecar restoration, third-party XMP preservation, invalid RAW rejection, and changed-original rejection. A real camera-file test runs when `PHOTO_EDITOR_RAW_FIXTURE` points to a local RAW; no personal or upstream photograph is copied into this repository. The multi-manufacturer evidence and fixture provenance are recorded in [RAW compatibility verification](RAW_COMPATIBILITY.md).
 
 On 2026-10-07, an existing local Nikon NEF passed actual sensor decoding, bounded preview, oriented full-resolution TIFF export, and original SHA-256 preservation. This verifies that camera file on this Mac, not every RAW format. Native smoke testing also saves/reopens a project before exporting the floating-point TIFF.

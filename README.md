@@ -29,9 +29,17 @@ swift test
 ./scripts/smoke_test_macos.sh
 ```
 
-The packaging script creates an ad-hoc-signed `dist/PhotoEditor.app` for local use on this Mac. Public downloadable distribution is outside the current product scope; that future path would require an Apple Developer identity, hardened-runtime signing, and notarization.
+The packaging script creates a hardened-runtime, ad-hoc-signed `dist/PhotoEditor.app` for local development. To create a public download, install a Developer ID Application certificate and store App Store Connect credentials with `notarytool`, then run:
 
-For opt-in performance measurements, run `./scripts/benchmark_macos.sh`. Results and measurement caveats are recorded in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+```sh
+PHOTO_EDITOR_SIGNING_IDENTITY='Developer ID Application: Name (TEAMID)' \
+PHOTO_EDITOR_NOTARY_PROFILE='photo-editor-notary' \
+./scripts/release_macos.sh
+```
+
+The release script notarizes and staples the app, checks it with Gatekeeper, packages the final ZIP, and writes a SHA-256 checksum. It stops before producing a release if either credential is unavailable. Copy the ZIP and checksum to a second compatible Apple-silicon Mac and run `./scripts/verify_release_archive.sh path/to/PhotoEditor.zip` before publishing the binary.
+
+For opt-in performance measurements, run `./scripts/benchmark_macos.sh`. To test local camera files without adding them to Git, pass them to `./scripts/test_raw_fixtures.sh`. Results and measurement caveats are recorded in [performance evidence](docs/PERFORMANCE.md) and [RAW compatibility verification](docs/RAW_COMPATIBILITY.md).
 
 ## Optional automation API
 

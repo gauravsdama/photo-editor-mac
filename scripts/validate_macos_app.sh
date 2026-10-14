@@ -36,6 +36,14 @@ plist_value() {
 
 codesign --verify --deep --strict "$app_dir" || fail "invalid code signature"
 
+signature_details=$(codesign --display --verbose=4 "$app_dir" 2>&1)
+grep -q 'flags=.*runtime' <<<"$signature_details" || fail "hardened runtime is not enabled"
+
+if [[ ${PHOTO_EDITOR_EXPECT_DEVELOPER_ID:-0} == 1 ]]; then
+  grep -q '^Authority=Developer ID Application:' <<<"$signature_details" || \
+    fail "expected a Developer ID Application signature"
+fi
+
 if find "$app_dir" -type l -print -quit | grep -q .; then
   fail "symbolic links are not allowed in the local bundle"
 fi

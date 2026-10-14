@@ -153,12 +153,58 @@ struct RAWWorkflowTests {
         let preview = try #require(ImageSourceLoader.loadPreviewSynchronously(from: source, maxDimension: 600))
         #expect(max(preview.image.width, preview.image.height) <= 600)
         #expect(preview.orientedPixelSize == native.extent.size)
+
+        let neutralPreview = try await ImageExporter.renderAdjustedPreview(
+            sourcePath: source.path,
+            adjustments: AdjustmentState(),
+            maxDimension: 600
+        )
         let output = directory.appendingPathComponent("rendered.tiff")
         var adjustments = AdjustmentState()
         adjustments.setValue(0.25, for: .exposure)
+        adjustments.setValue(0.15, for: .vibrance)
+        let adjustedPreview = try await ImageExporter.renderAdjustedPreview(
+            sourcePath: source.path,
+            adjustments: adjustments,
+            maxDimension: 600
+        )
+        #expect(neutralPreview.tiffRepresentation != adjustedPreview.tiffRepresentation)
+
         let result = try await ImageExporter.exportAdjustedImage(sourcePath: source.path, outputPath: output.path, adjustments: adjustments, quality: 1, format: .tiffFloat32)
         #expect(result.width == Int(native.extent.width))
         #expect(result.height == Int(native.extent.height))
+        let renderedSource = try #require(CGImageSourceCreateWithURL(output as CFURL, nil))
+        let rendered = try #require(CGImageSourceCreateImageAtIndex(renderedSource, 0, nil))
+        let renderedProperties = try #require(
+            CGImageSourceCopyPropertiesAtIndex(renderedSource, 0, nil) as? [String: Any]
+        )
+        #expect(rendered.width == result.width)
+        #expect(rendered.height == result.height)
+        #expect(rendered.bitsPerComponent == 32)
+        #expect(rendered.bitmapInfo.contains(.floatComponents))
+        #expect(rendered.colorSpace?.copyICCData() != nil)
+        #expect((renderedProperties[kCGImagePropertyOrientation as String] as? NSNumber)?.intValue == 1)
+
+        let project = directory.appendingPathComponent("edits.photoedit")
+        try PhotoProjectStore.save(
+            source: source,
+            document: project,
+            adjustments: adjustments.apiRepresentation,
+            format: .tiffFloat32
+        )
+        let restored = try PhotoProjectStore.load(project)
+        #expect(restored.adjustments == adjustments.apiRepresentation)
+
+        let corrupt = directory.appendingPathComponent("corrupt.\(source.pathExtension)")
+        let handle = try FileHandle(forReadingFrom: source)
+        let prefix = try handle.read(upToCount: 64 * 1_024) ?? Data()
+        try handle.close()
+        try prefix.write(to: corrupt, options: .atomic)
+        #expect(throws: PhotoWorkflowError.self) { try PhotoSource.image(at: corrupt) }
+
+        let temporaryOutputs = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasPrefix(".rendered.tiff.") && $0.hasSuffix(".tmp") }
+        #expect(temporaryOutputs.isEmpty)
         #expect(try PhotoProjectStore.fingerprint(source) == hash)
     }
 

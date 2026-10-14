@@ -661,7 +661,7 @@ This file is an exact, source-extracted inventory of visible SwiftUI text, dynam
   },
   {
     "file": "NativeUISmokeTest.swift",
-    "line": 60,
+    "line": 61,
     "literal": "\"Exported \\(output.lastPathComponent)\"",
     "value": "Exported \\(output.lastPathComponent)"
   },

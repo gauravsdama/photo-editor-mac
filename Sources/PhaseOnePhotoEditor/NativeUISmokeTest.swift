@@ -21,6 +21,7 @@ enum NativeUISmokeTest {
             guard window.makeFirstResponder(window.contentView) else {
                 throw SmokeError("window could not establish keyboard focus")
             }
+            try auditAccessibility(from: window)
 
             let workspace = FileManager.default.temporaryDirectory
                 .appendingPathComponent("photo-editor-ui-smoke-\(UUID().uuidString)", isDirectory: true)
@@ -97,6 +98,66 @@ enum NativeUISmokeTest {
             throw SmokeError("could not create the temporary JPEG fixture")
         }
         try data.write(to: url, options: .atomic)
+    }
+
+    private static func auditAccessibility(from root: AnyObject) throws {
+        var pending: [AnyObject] = [root]
+        var visited = Set<ObjectIdentifier>()
+        var auditedElementCount = 0
+        let labeledRoles: Set<NSAccessibility.Role> = [.button, .checkBox, .radioButton, .slider]
+
+        while let object = pending.popLast() {
+            let identifier = ObjectIdentifier(object)
+            guard visited.insert(identifier).inserted,
+                  let values = accessibilityValues(for: object) else { continue }
+            auditedElementCount += 1
+
+            let frame = values.frame
+            guard frame.origin.x.isFinite, frame.origin.y.isFinite,
+                  frame.width.isFinite, frame.height.isFinite else {
+                throw SmokeError("an accessibility element has a non-finite frame")
+            }
+
+            if let role = values.role, labeledRoles.contains(role) {
+                let label = values.label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let title = values.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard !label.isEmpty || !title.isEmpty else {
+                    throw SmokeError("an interactive accessibility element is missing a label")
+                }
+            }
+
+            for child in values.children {
+                if let child = child as AnyObject? { pending.append(child) }
+            }
+        }
+
+        guard auditedElementCount > 0 else {
+            throw SmokeError("the accessibility tree could not be inspected")
+        }
+    }
+
+    private static func accessibilityValues(
+        for object: AnyObject
+    ) -> (frame: NSRect, role: NSAccessibility.Role?, label: String?, title: String?, children: [Any])? {
+        if let view = object as? NSView {
+            let children = NSAccessibility.unignoredChildren(
+                from: (view.accessibilityChildren() ?? []) + view.subviews
+            )
+            return (view.accessibilityFrame(), view.accessibilityRole(), view.accessibilityLabel(),
+                    view.accessibilityTitle(), children)
+        }
+        if let window = object as? NSWindow {
+            var children = window.accessibilityChildren() ?? []
+            if let contentView = window.contentView { children.append(contentView) }
+            children = NSAccessibility.unignoredChildren(from: children)
+            return (window.accessibilityFrame(), window.accessibilityRole(), window.accessibilityLabel(),
+                    window.accessibilityTitle(), children)
+        }
+        if let element = object as? NSAccessibilityElement {
+            return (element.accessibilityFrame(), element.accessibilityRole(), element.accessibilityLabel(),
+                    element.accessibilityTitle(), element.accessibilityChildren() ?? [])
+        }
+        return nil
     }
 
     private struct SmokeError: LocalizedError {
